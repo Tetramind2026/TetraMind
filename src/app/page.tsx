@@ -30,6 +30,7 @@ const fieldNames = {
   frequency: "FREQUENCIA_COMPRA_ANUAL_DERIVADO_pedidos_ano",
   daysSincePurchase: "DIAS_DESDE_ULTIMA_COMPRA_DERIVADO",
   averageCycle: "CICLO_MEDIO_DIAS_DERIVADO",
+  cycleReliable: "CICLO_CONFIAVEL_DERIVADO",
   recurringProduct: "PRODUTO_RECORRENTE_DERIVADO",
   lostProduct: "PRODUTO_QUE_DEIXOU_DE_COMPRAR_DERIVADO",
   lastContact: "ULTIMO_CONTATO_NECTAR_INFERIDO",
@@ -66,7 +67,29 @@ function meaningfulText(value: string | undefined): string | null {
 function identifiedProduct(value: string | undefined): string | null {
   const product = meaningfulText(value);
   return product === "0" ? null : product;
+ }
+  function parseBoolean(value: string | undefined): boolean {
+    const normalized = value?.trim().toUpperCase() ?? "";
+  return normalized === "TRUE" || normalized === "VERDADEIRO" || normalized === "1" || normalized === "SIM";
 }
+
+const PRODUCT_COMPLEMENTS: Record<string, string[]> = {};
+
+function findCrossSellTarget(productsBought: string | null): string | null {
+  const products = splitObservedProducts(productsBought)
+    .map((product) => product.trim().toLocaleUpperCase());
+
+  for (const product of products) {
+    const complements = PRODUCT_COMPLEMENTS[product] ?? [];
+    const target = complements.find(
+      (candidate) => !products.includes(candidate.toLocaleUpperCase()),
+    );
+    if (target) return target;
+  }
+
+  return null;
+}
+
 
 type LostProductCategory =
   | "Produto real identificado"
@@ -211,6 +234,8 @@ function calculatePriorities(headers: string[], rows: string[][]): PrioritizedCl
     frequency: parseNumber(getValue(record, fieldNames.frequency)),
     daysSincePurchase: parseNumber(getValue(record, fieldNames.daysSincePurchase)),
     averageCycle: parseNumber(getValue(record, fieldNames.averageCycle)),
+    cycleReliable: getValue(record, fieldNames.cycleReliable).trim().toLowerCase() === "true",
+
     productCount: parseNumber(getValue(record, fieldNames.productCount)),
   }));
   const maximumTicket = Math.max(0, ...values.map(({ ticket }) => ticket ?? 0));
@@ -218,19 +243,21 @@ function calculatePriorities(headers: string[], rows: string[][]): PrioritizedCl
   const maximumFrequency = Math.max(0, ...values.map(({ frequency }) => frequency ?? 0));
 
   return values
-    .map(({ record, revenue, ticket, frequency, daysSincePurchase, averageCycle, productCount }) => {
+    .map(({ record, revenue, ticket, frequency, daysSincePurchase, averageCycle, cycleReliable, productCount }) => {
+      
       const name = meaningfulText(getValue(record, fieldNames.clientRm))
         || meaningfulText(getValue(record, fieldNames.clientNectar));
       if (!name) return null;
 
-      const overdueDays = daysSincePurchase !== null && averageCycle !== null && averageCycle > 0
-        ? Math.max(0, daysSincePurchase - averageCycle)
-        : 0;
+     const overdueDays = daysSincePurchase !== null && averageCycle !== null && averageCycle > 0 && cycleReliable
+  ? Math.max(0, daysSincePurchase - averageCycle)
+  : 0; 
       const overdueRatio = averageCycle && overdueDays > 0 ? overdueDays / averageCycle : 0;
       const isOverdue = overdueDays > 0;
       const lostProduct = hasRealLostProduct(getValue(record, fieldNames.lostProduct));
       const hasRelevantHistory = (ticket ?? 0) > 0 || (revenue ?? 0) > 0;
-      const crossSell = productCount !== null && productCount > 0 && productCount <= 2 && hasRelevantHistory;
+      const crossSellTarget = findCrossSellTarget(getValue(record, fieldNames.products));
+const crossSell = crossSellTarget !== null;
       const recentContactDays = daysSince(parseDate(getValue(record, fieldNames.lastContact)));
       const contactDiscount = recentContactDays !== null && recentContactDays <= 14
         ? 0.8
@@ -294,7 +321,7 @@ function countOpportunities(headers: string[], rows: string[][]): number {
     const productCount = parseNumber(record[fieldNames.productCount]);
     const hasRelevantHistory = (ticket ?? 0) > 0 || (revenue ?? 0) > 0;
     const lostProduct = hasRealLostProduct(record[fieldNames.lostProduct]);
-    const crossSell = productCount !== null && productCount > 0 && productCount <= 2 && hasRelevantHistory;
+    const crossSell = findCrossSellTarget(record[fieldNames.products]) !== null;
 
     return lostProduct || crossSell;
   }).length;
@@ -376,13 +403,14 @@ function calculateSignalDiagnostics(headers: string[], rows: string[][]): Signal
     const productCount = parseNumber(record[fieldNames.productCount]);
     const daysSincePurchase = parseNumber(record[fieldNames.daysSincePurchase]);
     const averageCycle = parseNumber(record[fieldNames.averageCycle]);
-    const overdueDays = daysSincePurchase !== null && averageCycle !== null && averageCycle > 0
-      ? Math.max(0, daysSincePurchase - averageCycle)
-      : 0;
+const cycleReliable = record[fieldNames.cycleReliable].trim().toLowerCase() === "true";
+const overdueDays = daysSincePurchase !== null && averageCycle !== null && averageCycle > 0 && cycleReliable
+  ? Math.max(0, daysSincePurchase - averageCycle)
+  : 0;
     const isOverdue = overdueDays > 0;
     const lostProduct = hasRealLostProduct(record[fieldNames.lostProduct]);
     const hasRelevantHistory = (ticket ?? 0) > 0 || (revenue ?? 0) > 0;
-    const crossSell = productCount !== null && productCount > 0 && productCount <= 2 && hasRelevantHistory;
+    const crossSell = findCrossSellTarget(record[fieldNames.products]) !== null;
 
     return {
       record,
